@@ -1,0 +1,17 @@
+# --- Business data: NEVER commit. Commercially sensitive (sales, margin, vendors, returns) ---
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+
+# OneDrive conflict copies (in case the repo ever sits in a synced folder)
+*-DESKTOP-*
+*" - Copy"*
