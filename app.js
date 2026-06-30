@@ -118,14 +118,20 @@ function clearCharts() { while (charts.length) { try { charts.pop().destroy(); }
 
 function barChart(canvas, labels, values, label, color, horizontal, moneyAxis) {
   const fmt = moneyAxis ? fmtMoney : fmtInt;
+  const valCb = v => fmt(v);
+  // category-axis labels: render the real name (truncated for space), not the index
+  const catCb = v => {
+    const lab = labels[v] == null ? String(v) : String(labels[v]);
+    return lab.length > 28 ? lab.slice(0, 27) + '…' : lab;
+  };
   return makeChart(canvas, 'bar', labels, [{
     label, data: values, backgroundColor: color || PALETTE[0], borderRadius: 4
   }], {
     options: { indexAxis: horizontal ? 'y' : 'x' },
     tooltip: { label: c => `${label}: ${fmt(c.parsed[horizontal ? 'x' : 'y'])}` },
     scales: {
-      x: { ticks: { font: { size: 10 }, callback: horizontal ? (v => fmt(v)) : undefined } },
-      y: { ticks: { font: { size: 10 }, callback: horizontal ? undefined : (v => fmt(v)) } }
+      x: { ticks: { font: { size: 10 }, autoSkip: !!horizontal, callback: horizontal ? valCb : catCb } },
+      y: { ticks: { font: { size: 10 }, autoSkip: !horizontal, callback: horizontal ? catCb : valCb } }
     }
   });
 }
@@ -168,7 +174,8 @@ function buildTable(container, options) {
   const table = document.createElement('table'); table.className = 'data';
   const thead = document.createElement('thead');
   const tbody = document.createElement('tbody');
-  table.appendChild(thead); table.appendChild(tbody);
+  const tfoot = document.createElement('tfoot');
+  table.appendChild(thead); table.appendChild(tbody); table.appendChild(tfoot);
   scroll.appendChild(table); wrap.appendChild(scroll);
 
   const moreWrap = document.createElement('div'); moreWrap.className = 'show-more';
@@ -232,6 +239,19 @@ function buildTable(container, options) {
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
+    }
+    if (options.footer) {
+      tfoot.innerHTML = '';
+      const cells = options.footer(rows);
+      const ftr = document.createElement('tr');
+      cells.forEach((cell, i) => {
+        const td = document.createElement('td');
+        const col = columns[i];
+        if (col && (col.num || col.money || col.pct)) td.className = 'num';
+        if (cell instanceof Node) td.appendChild(cell); else td.innerHTML = cell == null ? '' : cell;
+        ftr.appendChild(td);
+      });
+      tfoot.appendChild(ftr);
     }
     count.textContent = `${fmtInt(rows.length)} rows`;
     moreWrap.style.display = rows.length > shown ? 'block' : 'none';
@@ -493,7 +513,13 @@ function renderItemInventory(root, t) {
       stock, salesQty, salesNet,
       salesCost: n0(t.get(r, 'SalesCost')),
       invCost: n0(t.get(r, 'InventoryatCost', 'InventoryAtCost')),
-      invRetail: n0(t.get(r, 'InventoryAtRetail'))
+      invRetail: n0(t.get(r, 'InventoryAtRetail')),
+      // store-level units sold (date range)
+      llanQty: n0(t.get(r, 'LLan_SalesQty_DateRange')),
+      tonyQty: n0(t.get(r, 'Tony_SalesQty_DateRange')),
+      crossQty: n0(t.get(r, 'Cross_SalesQty_DateRange')),
+      melkQty: n0(t.get(r, 'Melk_SalesQty_DateRange')),
+      gross: n0(t.get(r, 'SalesGross'))
     };
   }).filter(r => r.item != null && r.item !== '');
 
@@ -516,9 +542,6 @@ function renderItemInventory(root, t) {
   const topItems = topN(rows.map(r => ({ key: r.desc || r.item, value: r.salesNet })), 12);
   barChart(chartCard(grid, 'Best-selling items by net sales', 'Top 12'), topItems.map(d => d.key), topItems.map(d => d.value), 'Net sales', PALETTE[0], true, true);
 
-  const bySection = topN(groupSum(rows, r => r.section, r => r.salesNet), 12);
-  barChart(chartCard(grid, 'Net sales by section', ''), bySection.map(d => d.key), bySection.map(d => d.value), 'Net sales', PALETTE[0], true, true);
-
   const byVendor = topN(groupSum(rows, r => r.vendor, r => r.salesNet), 12);
   barChart(chartCard(grid, 'Best-performing vendors', 'Top 12 by net sales'), byVendor.map(d => d.key), byVendor.map(d => d.value), 'Net sales', PALETTE[2], true, true);
 
@@ -530,6 +553,34 @@ function renderItemInventory(root, t) {
     [{ data: [lowM, midM, hiM], backgroundColor: [PALETTE[1], PALETTE[2], PALETTE[3]] }],
     { tooltip: { label: c => `${c.label}: ${fmtInt(c.parsed)} lines` } });
   root.appendChild(grid);
+
+  // Sales by store & section (replaces the net-sales-by-section chart)
+  const storeMap = new Map();
+  for (const r of rows) {
+    const k = r.section;
+    if (!storeMap.has(k)) storeMap.set(k, { section: k, llan: 0, cross: 0, tony: 0, melk: 0, gross: 0 });
+    const g = storeMap.get(k);
+    g.llan += r.llanQty; g.cross += r.crossQty; g.tony += r.tonyQty; g.melk += r.melkQty; g.gross += r.gross;
+  }
+  const storeRows = [...storeMap.values()].map(g => Object.assign(g, { totalQty: g.llan + g.cross + g.tony + g.melk }));
+  root.appendChild(el('div', 'section-title', 'Sales by store & section'));
+  root.appendChild(el('div', 'note', 'Units sold by store for each section, with total gross sales. Stores: Llantrisant (Llan), Cross Hands (Cross), Tonypandy (Tony), Melksham (Melk). The Grand Total row sums all sections.'));
+  buildTable(tableCard(root, ''), {
+    rows: storeRows, initialSort: { key: 'gross', desc: true }, pageSize: 100, search: false,
+    footer: fr => {
+      const sum = k => fr.reduce((s, r) => s + r[k], 0);
+      return ['Grand Total', fmtInt(sum('llan')), fmtInt(sum('cross')), fmtInt(sum('tony')), fmtInt(sum('melk')), fmtInt(sum('totalQty')), fmtMoney(sum('gross'))];
+    },
+    columns: [
+      { key: 'section', label: 'Section' },
+      { key: 'llan', label: 'Llantrisant', num: true },
+      { key: 'cross', label: 'Cross Hands', num: true },
+      { key: 'tony', label: 'Tonypandy', num: true },
+      { key: 'melk', label: 'Melksham', num: true },
+      { key: 'totalQty', label: 'Total units', num: true },
+      { key: 'gross', label: 'Gross', money: true }
+    ]
+  });
 
   const sections = [...new Set(rows.map(r => r.section))].sort();
   const vendors = [...new Set(rows.map(r => r.vendor))].sort();
